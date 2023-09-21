@@ -5,7 +5,7 @@ const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 const jwtSecret = 'secret_key'; 
 
 mongoose.connect('mongodb+srv://ndubuisiaso:J765uGBzds2LYKme@cluster0.y9ipvbd.mongodb.net/votar-auth', {
