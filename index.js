@@ -1,107 +1,98 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const nodemailer = require('nodemailer');
 const bodyParser = require('body-parser');
-const jwt = require('jsonwebtoken');
+const twilio = require('twilio');
+require('dotenv').config();
+const accountSid = process.env.ACCOUNT_SID;
+const authToken = process.env.AUTH_TOKEN;
+const client = new twilio(accountSid, authToken);
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const jwtSecret = 'secret_key'; 
 
-mongoose.connect('mongodb+srv://ndubuisiaso:J765uGBzds2LYKme@cluster0.y9ipvbd.mongodb.net/votar-auth', {
+// Connect to MongoDB
+mongoose.connect(process.env.MONGO, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-});
+})
+  .then(() => console.log('Connected to MongoDB'))
+  .catch((err) => console.error('Error connecting to MongoDB:', err.message));
 
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
-  verificationToken: String,
-  verified: { type: Boolean, default: false },
+  phoneNumber: { type: String, required: true }, 
+  isPhoneVerified: { type: Boolean, default: false },
+  verificationCode: String, 
 });
 
 const User = mongoose.model('User', userSchema);
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-     user: 'votarhq@gmail.com',
-    pass: 'rgifyjwgrdvzczjj'
-  },
-});
-
 app.use(bodyParser.json());
 
-// Registration endpoint
-app.post('/register', async (req, res) => {
-  try {
-    const { email, password } = req.body;
+app.post('/register', (req, res) => {
+  const { email, password, phoneNumber } = req.body;
 
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Email already exists.' });
-    }
+  // Generate a random verification code
+  const verificationCode = Math.floor(1000 + Math.random() * 9000);
 
-    // Create a new user record
-    const user = new User({ email, password });
-    await user.save();
+  const user = new User({ email, password, phoneNumber, verificationCode });
 
-     // Generate a JWT token
-     const verificationToken = jwt.sign({ userId: user._id }, jwtSecret, { expiresIn: '1h' });
-
-    // Send a verification email
-    sendVerificationEmail(email, verificationToken);
-
-    res.status(201).json({ message: 'User registered. Check your email for verification.', verificationToken });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Registration failed.' });
-  }
+  user.save()
+    .then(() => {
+      // Send verification code via Twilio
+      client.messages
+        .create({
+          body: `Your verification code is: ${verificationCode}`,
+          from: '+18156621326',
+          to: phoneNumber,
+        })
+        .then((message) => {
+          console.log('Verification code sent:', message.sid);
+          res.status(200).json({ message: 'User registered successfully. Check your phone for verification code.' });
+        })
+        .catch((error) => {
+          console.error('Error sending verification code:', error);
+          res.status(500).json({ message: 'Error sending verification code.' });
+        });
+    })
+    .catch((error) => {
+      console.error('Error registering user:', error);
+      res.status(500).json({ message: 'Error registering user.' });
+    });
 });
 
-// Email verification endpoint
-app.get('/verify/:token', async (req, res) => {
-  try {
-    const token = req.params.token;
-    // Verify the token using your JWT secret key
-    const decoded = jwt.verify(token, jwtSecret);
-    const userId = decoded.userId;
+// Phone number verification endpoint
+app.post('/verify-phone', (req, res) => {
+  const { phoneNumber, verificationCode } = req.body;
 
-    // Find the user by their ID and mark them as verified
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
-    }
-
-    // Mark the user as verified
-    user.verified = true;
-    await user.save();
-
-    res.status(200).json({ message: 'Email verified successfully.' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Email verification failed.' });
-  }
+  User.findOne({ phoneNumber: phoneNumber })
+    .then((user) => {
+      if (!user) {
+        res.status(404).json({ message: 'User not found.' });
+      } else if (user.isPhoneVerified) {
+        res.status(400).json({ message: 'Phone number already verified.' });
+      } else if (verificationCode === user.verificationCode) {
+        user.isPhoneVerified = true;
+        user.save()
+          .then(() => {
+            res.status(200).json({ message: 'Phone number successfully verified.' });
+          })
+          .catch((error) => {
+            console.error('Error updating user:', error);
+            res.status(500).json({ message: 'Error updating user.' });
+          });
+      } else {
+        res.status(400).json({ message: 'Incorrect verification code.' });
+      }
+    })
+    .catch((error) => {
+      console.error('Error finding user:', error);
+      res.status(500).json({ message: 'Error finding user.' });
+    });
 });
 
 // Server start
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
-
-// Helper function to send a verification email
-function sendVerificationEmail(email, token) {
-  const mailOptions = {
-    to: email,
-    subject: 'Email Verification',
-    html: `Click <a href="http://localhost:3000/verify/${token}">here</a> to verify your email.`,
-  };
-
-  transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      console.error(error);
-    } else {
-      console.log(`Email sent: ${info.response}`);
-    }
-  });
-}
